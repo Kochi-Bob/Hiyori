@@ -12,7 +12,10 @@ node_modules/
 /.local/
 /.cache/
 /releases/
-packs-waiting/
+content/lessons/
+content/reference/
+content/README.md
+AGENTS.md
 *.apk
 *.aab
 *.log
