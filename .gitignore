@@ -1,0 +1,38 @@
+# Keep Android project sources visible in checkouts with a local /android/ rule.
+!/android/
+/android/.idea/
+/android/capacitor.settings.gradle
+/android/app/capacitor.build.gradle
+/android/app/google-services.json
+
+# Dependencies, builds and local tools
+node_modules/
+/dist/
+/.tools/
+/.local/
+/.cache/
+/releases/
+packs-waiting/
+*.apk
+*.aab
+*.log
+
+# Local environment, credentials and user data
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+/secrets/
+/credentials/
+/userdata/
+/user-data/
+/learning-data/
+/backups/
+hiyori-backup*.json
+hiyori-backup*.zip
+hiyori.bak.zip
