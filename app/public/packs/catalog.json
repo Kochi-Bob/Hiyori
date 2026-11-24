@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "packs": [
+    {
+      "id": "book-red",
+      "version": "1.0.0",
+      "file": "book-red.zip"
+    },
+    {
+      "id": "book-blue",
+      "version": "1.0.0",
+      "file": "book-blue.zip"
+    },
+    {
+      "id": "book-beginner-1",
+      "version": "1.0.0",
+      "file": "book-beginner-1.zip"
+    },
+    {
+      "id": "book-beginner-2",
+      "version": "1.0.0",
+      "file": "book-beginner-2.zip"
+    },
+    {
+      "id": "book-intermediate-1",
+      "version": "1.0.0",
+      "file": "book-intermediate-1.zip"
+    },
+    {
+      "id": "book-intermediate-2",
+      "version": "1.0.0",
+      "file": "book-intermediate-2.zip"
+    },
+    {
+      "id": "book-advanced-1",
+      "version": "1.0.0",
+      "file": "book-advanced-1.zip"
+    },
+    {
+      "id": "book-advanced-2",
+      "version": "1.0.0",
+      "file": "book-advanced-2.zip"
+    }
+  ]
+}
