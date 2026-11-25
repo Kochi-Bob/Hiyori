@@ -4,14 +4,9 @@ import { unzipSync, strFromU8, strToU8, zipSync } from 'fflate';
 import { createEmptyCard, fsrs, type Grade } from 'ts-fsrs';
 import type { ContentDataset, Entry, InstalledPack, PackManifest, Profile, Source } from './types';
 import { buildStudyPlan } from './study-plan';
-import { memberOrder } from '../../content/book-packs.json';
 
 const emptyContent = (): ContentDataset => ({ books: [], entries: [], lessons: [], sources: [], quizzes: [], bookSections: [] });
-// OCR source archives live under app/public/packs-waiting and are not learning packs.
-// Hide any copies left in IndexedDB from older installs or manual imports.
-const isWaitingPack = (id: string) => id.startsWith('txt-corpus-');
-const memberRanks = new Map(memberOrder.map((id, index) => [id, index]));
-type DatasetRow = { id: string; data: ContentDataset | ContentDataset[] };
+type DatasetRow = { id: string; data: ContentDataset[] };
 export const initialProfile = (): Profile => ({
   settings: { dailyNewLimit: 10, defaultMinutes: 5, targetLevel: 'N4', furigana: true },
   favorites: [], notes: {}, lessonProgress: {}, cards: [], reviews: [], answers: [], session: null, masteredEntryIds: [], quizSession: null, requiredPacks: [],
@@ -20,12 +15,18 @@ export const initialProfile = (): Profile => ({
 class LibraryDB extends Dexie {
   packs!: Table<InstalledPack, string>;
   datasets!: Table<DatasetRow, string>;
-  assets!: Table<{ id: string; blob: Blob }, string>;
   profiles!: Table<{ id: string; data: Profile }, string>;
   snapshots!: Table<{ id: string; data: Profile; at: string }, string>;
   constructor(name = 'hiyori-local-v1') {
     super(name);
     this.version(1).stores({ packs: 'id', datasets: 'id', assets: 'id', profiles: 'id', snapshots: 'id' });
+    this.version(2).stores({ assets: null }).upgrade(async tx => {
+      // Remove unsupported content from old databases without touching learning records.
+      const packs = tx.table<InstalledPack, string>('packs');
+      const obsolete = await packs.filter(pack => pack.schemaVersion !== 4).toArray();
+      await tx.table('datasets').bulkDelete(obsolete.map(pack => pack.generation));
+      await packs.bulkDelete(obsolete.map(pack => pack.id));
+    });
   }
 }
 export const db = new LibraryDB();
@@ -42,50 +43,15 @@ export function normalizeSearch(text: string): string {
   return text.normalize('NFKC').toLowerCase().replace(/[\u30a1-\u30f6]/g, c => String.fromCharCode(c.charCodeAt(0) - 0x60)).replace(/\s+/g, '');
 }
 function hydrateProfile(profile: Profile): Profile {
-  // Same-sense duplicates share one stable ID across lessons and reference books.
-  // Keep historical cards archived; notes and explicit user choices follow the shared ID.
-  const aliases: Record<string, string> = {
-    'vocab-b1-l04-019': 'vocab-kyodai',
-    'vocab-b1-l04-020': 'vocab-ryoshin',
-    'vocab-b1-l04-021': 'vocab-imoto',
-    'grammar-blue-n5-092': 'red-n5-vocab-50b399899146',
-    'grammar-blue-n5-040': 'red-n5-vocab-df69db4e7a90',
-    'vocab-blue-n5-greeting-23': 'red-n5-vocab-b3a01ad2df25',
-    'grammar-blue-n5-110-u1': 'red-n5-vocab-e5cb1ea93b6d',
-    'grammar-blue-n5-088-u2': 'red-n5-vocab-80c03ca8ef4a',
-    'grammar-blue-n5-087-u1': 'red-n5-vocab-3a1899d1f7eb',
-    'grammar-blue-n5-026-u1': 'red-n5-vocab-c2d9997fb3d9',
-    'grammar-blue-n5-026-u2': 'red-n5-vocab-92c2b80e187e',
-    'grammar-blue-n5-063': 'red-n5-vocab-c38dc5a83a97',
-    'grammar-blue-n5-85-にん': 'red-n5-vocab-076fa7e6f345',
-    'grammar-blue-n5-074': 'red-n5-vocab-83f7fd4cfcf5',
-    'grammar-blue-n5-104': 'red-n5-vocab-071969e5463c',
-    'grammar-blue-n5-094': 'red-n5-vocab-e10566a52915',
-    'grammar-blue-n5-113': 'red-n5-vocab-b88e5ca19acf',
-    'grammar-blue-n5-082-1': 'red-n5-vocab-c1fdb2ca1817',
-    'grammar-blue-n5-117': 'red-n5-vocab-12c6e3f71e8b',
-    'grammar-blue-n5-025': 'red-n5-vocab-f8b41840d34e',
-    'grammar-blue-n5-076': 'red-n4-vocab-ba10709a10d9',
-    'grammar-blue-n5-071': 'red-n5-vocab-e75017b2855b',
-    'grammar-blue-n5-072': 'red-n4-vocab-831e169abd74',
-    'grammar-blue-n5-096': 'red-n4-vocab-2d7eed5945ed',
-    'grammar-blue-n5-067': 'red-n5-vocab-bd87ccb9f3ea',
-    'vocab-blue-n5-greeting-28': 'red-n4-vocab-b3e280af965d',
-    'grammar-blue-n5-061': 'red-n5-vocab-a3c4b25e85bb',
-    'grammar-blue-n4-031-u1': 'red-n4-vocab-4b50f151eac6',
-    'red-n4-vocab-3d206ac4af88': 'red-n5-vocab-2e2898ac6d6b',
-    'red-n4-vocab-2d1c4f6143c9': 'red-n4-vocab-d3665e159799',
-    'grammar-blue-n4-112': 'red-n4-vocab-3947becb39e9',
-    'grammar-blue-n4-088': 'red-n4-vocab-4e9002a579ca',
+  return {
+    ...profile,
+    notes: { ...profile.notes },
+    masteredEntryIds: profile.masteredEntryIds || [],
+    cards: profile.cards.map(row => ({
+      ...row,
+      card: { ...row.card, due: new Date(row.card.due), ...(row.card.last_review ? { last_review: new Date(row.card.last_review) } : {}) },
+    })),
   };
-  const notes = { ...profile.notes };
-  for (const [from, to] of Object.entries(aliases)) {
-    if (notes[from]) notes[to] = notes[to] && notes[to] !== notes[from] ? `${notes[to]}\n\n${notes[from]}` : notes[from];
-    delete notes[from];
-  }
-  const remap = (ids: string[]) => [...new Set(ids.map(id => aliases[id] || id))];
-  const session = profile.session ? { ...profile.session, entryIds: remap(profile.session.entryIds), index: remap(profile.session.entryIds.slice(0, profile.session.index)).length } : null;
-  return { ...profile, notes, favorites: remap(profile.favorites), session, masteredEntryIds: remap(profile.masteredEntryIds || []), cards: profile.cards.map(row => ({ ...row, ...(aliases[row.entryId] ? { archived: true } : {}), card: { ...row.card, due: new Date(row.card.due), ...(row.card.last_review ? { last_review: new Date(row.card.last_review) } : {}) } })) };
 }
 function skipMasteredCards(profile: Profile) {
   const mastered = new Set(profile.masteredEntryIds || []);
@@ -94,20 +60,14 @@ function skipMasteredCards(profile: Profile) {
 export function mergeContent(parts: ContentDataset[]): ContentDataset {
   const merged = emptyContent();
   const statusRank = { searchable: 0, learnable: 1, verified: 2 };
-  const sourceAssets = new Map<string, string>();
   for (const key of ['books', 'entries', 'lessons', 'sources', 'quizzes', 'bookSections'] as const) {
     const rows = new Map<string, any>();
     for (const part of parts) for (const item of part[key] ?? []) {
       const old = rows.get(item.id);
       if (key === 'bookSections' && old) assert(canonical(old) === canonical(item), `教材栏目 ID 冲突：${item.id}`);
-      if (key === 'sources') {
+      if (key === 'sources' && old) {
         const source = item as Source;
-        // Sequential upgrades may mix legacy image-backed and current text-only sources.
-        // Removing an optional asset does not change the identity of the textbook page.
-        const asset = sourceAssets.get(source.id);
-        assert((!old || (old.bookId === source.bookId && old.pdfPage === source.pdfPage))
-          && (!asset || !source.asset || asset === source.asset), `原页 ID 冲突：${item.id}`);
-        if (source.asset) sourceAssets.set(source.id, source.asset);
+        assert(old.bookId === source.bookId && old.pdfPage === source.pdfPage, `原页 ID 冲突：${item.id}`);
       }
       if (key === 'entries' && old) {
         const entry = item as Entry;
@@ -152,7 +112,7 @@ export function mergeContent(parts: ContentDataset[]): ContentDataset {
 let contentCache: { db: string; key: string; content: ContentDataset } | undefined;
 export async function readLibrary() {
   return db.transaction('r', db.packs, db.datasets, db.profiles, async () => {
-    const packs = (await db.packs.toArray()).filter(pack => !isWaitingPack(pack.id)).sort((a, b) => a.installedAt.localeCompare(b.installedAt));
+    const packs = (await db.packs.toArray()).sort((a, b) => a.installedAt.localeCompare(b.installedAt));
     const key = packs.map(p => p.generation).join('\n');
     let content: ContentDataset;
     if (contentCache?.db === db.name && contentCache.key === key) content = contentCache.content;
@@ -165,14 +125,7 @@ export async function readLibrary() {
   });
 }
 export function orderedDatasets(packs: PackManifest[], rows: (DatasetRow | undefined)[]) {
-  // On consolidation, keep the original catalog precedence across books.
-  const grouped = packs.some(pack => pack.members);
-  const parts = packs.flatMap((pack, index) => {
-    const data = rows[index]?.data;
-    if (!data) return [];
-    if (Array.isArray(data)) return data.map((part, i) => ({ data: part, order: pack.members![i].order }));
-    return [{ data, order: grouped ? memberRanks.get(pack.id) ?? Infinity : 0 }];
-  });
+  const parts = packs.flatMap((pack, index) => rows[index]?.data.map((data, i) => ({ data, order: pack.members[i].order })) ?? []);
   return parts.sort((a, b) => a.order - b.order).map(part => part.data);
 }
 export function useLibrary() {
@@ -194,14 +147,7 @@ export async function updateSettings(patch: Partial<Profile['settings']>) {
 }
 export const toggleFavorite = (id: string) => editProfile(p => { p.favorites = p.favorites.includes(id) ? p.favorites.filter(x => x !== id) : [...p.favorites, id]; });
 export const saveNote = (id: string, text: string) => editProfile(p => { p.notes[id] = text.slice(0, 10000); });
-export const setLessonProgress = (id: string, section: number, completed: boolean) => id === 'beginner-1-lesson-21'
-  ? db.transaction('rw', db.packs, db.profiles, async () => {
-    const p = hydrateProfile((await db.profiles.get('main'))?.data ?? initialProfile());
-    const version = installedVersion(await db.packs.toArray(), id);
-    p.lessonProgress[id] = { section, completed, ...(version ? { sectionVersion: version } : {}) };
-    await db.profiles.put({ id: 'main', data: p });
-  })
-  : editProfile(p => { p.lessonProgress[id] = { section, completed }; });
+export const setLessonProgress = (id: string, section: number, completed: boolean) => editProfile(p => { p.lessonProgress[id] = { section, completed }; });
 export async function setEntryMastered(entryId: string, mastered: boolean) {
   const { content } = await readLibrary();
   assert(content.entries.some(e => e.id === entryId), '该知识条目的内容包尚未安装');
@@ -273,7 +219,7 @@ export async function submitAnswer(quizId: string, answer: string) {
   return correct;
 }
 
-export function validateContent(data: unknown, assetPaths: Set<string>, dependencyContent = emptyContent(), allowTextOnlySources = false): asserts data is ContentDataset {
+function validateContent(data: unknown): asserts data is ContentDataset {
   assert(isObject(data), '教材内容格式错误');
   for (const key of ['books', 'entries', 'sources', 'lessons', 'quizzes']) {
     assert(Array.isArray(data[key]), `缺少内容列表：${key}`);
@@ -283,29 +229,27 @@ export function validateContent(data: unknown, assetPaths: Set<string>, dependen
       seen.add(item.id);
     }
   }
-  assert(data.bookSections === undefined || Array.isArray(data.bookSections), '教材栏目必须为数组');
+  assert(Array.isArray(data.bookSections), '教材栏目必须为数组');
   const sectionIds = new Set<string>();
-  for (const section of (data.bookSections ?? []) as unknown[]) {
+  for (const section of data.bookSections) {
     assert(isObject(section) && nonempty(section.id) && !sectionIds.has(section.id), '教材栏目含无效或重复 ID');
     sectionIds.add(section.id);
     assert(nonempty(section.title) && nonempty(section.text) && sectionKinds.includes(section.kind as string) && nonempty(section.bookId) && statuses.includes(section.status as string) && Number.isInteger(section.order) && (section.order as number) >= 0, `教材栏目无效：${section.id}`);
     assert(strings(section.sourceIds) && section.sourceIds.length > 0, `教材栏目来源缺失：${section.id}`);
   }
   const d = data as unknown as ContentDataset;
-  const combined = mergeContent([dependencyContent, d]);
-  const books = new Map(combined.books.map(x => [x.id, x]));
-  const sources = new Set(combined.sources.map(x => x.id));
-  const entries = new Set(combined.entries.map(x => x.id));
-  const lessons = new Set(combined.lessons.map(x => x.id));
-  const quizzes = new Set(combined.quizzes.map(x => x.id));
-  const sourceRows = new Map(combined.sources.map(x => [x.id, x]));
-  const lessonRows = new Map(combined.lessons.map(x => [x.id, x]));
+  const books = new Map(d.books.map(x => [x.id, x]));
+  const sources = new Set(d.sources.map(x => x.id));
+  const entries = new Set(d.entries.map(x => x.id));
+  const lessons = new Set(d.lessons.map(x => x.id));
+  const quizzes = new Set(d.quizzes.map(x => x.id));
+  const sourceRows = new Map(d.sources.map(x => [x.id, x]));
+  const lessonRows = new Map(d.lessons.map(x => [x.id, x]));
   const refs = (v: unknown, set: Set<string>, label: string) => assert(strings(v) && v.every(id => set.has(id)), `${label}引用缺失`);
   for (const b of d.books) assert(nonempty(b.title) && nonempty(b.filename) && Number.isInteger(b.pageCount) && b.pageCount > 0, '书籍信息无效');
   for (const s of d.sources) {
     assert(books.has(s.bookId) && Number.isInteger(s.pdfPage) && s.pdfPage > 0 && s.pdfPage <= books.get(s.bookId)!.pageCount, `原页页码无效：${s.id}`);
-    if (s.asset === undefined) assert(allowTextOnlySources, `旧版内容包来源缺少原页图片：${s.id}`);
-    else assert(safePath(s.asset) && s.asset.startsWith('assets/') && assetPaths.has(s.asset), `原页图片缺失或路径无效：${s.id}`);
+    assert(s.printedPage === undefined || typeof s.printedPage === 'string', `书页标注无效：${s.id}`);
   }
   for (const e of d.entries) {
     assert(['vocabulary', 'grammar'].includes(e.type) && nonempty(e.term) && nonempty(e.meaning) && statuses.includes(e.status), `条目无效：${e.id}`);
@@ -352,8 +296,10 @@ export async function sha256(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new Uint8Array(bytes));
   return [...new Uint8Array(digest)].map(x => x.toString(16).padStart(2, '0')).join('');
 }
+const zipSizeLimit = 100 * 1024 * 1024;
+const zipSizeMessage = '单个内容包不能超过 100 MB，请检查内容包大小';
 function readZip(bytes: Uint8Array) {
-  assert(bytes.length <= 100 * 1024 * 1024, '单个内容包不能超过 100 MB，请按课拆分');
+  assert(bytes.length <= zipSizeLimit, zipSizeMessage);
   let total = 0, count = 0;
   const rejected: string[] = [];
   const files = unzipSync(bytes, { filter: f => {
@@ -370,135 +316,83 @@ function compareVersions(a: string, b: string) {
   return 0;
 }
 function installedVersion(packs: PackManifest[], id: string) {
-  return packs.find(pack => pack.id === id)?.version ?? packs.flatMap(pack => pack.members ?? []).find(member => member.id === id)?.version;
+  return packs.find(pack => pack.id === id)?.version ?? packs.flatMap(pack => pack.members).find(member => member.id === id)?.version;
 }
 export function satisfiesPack(packs: PackManifest[], required: { id: string; version: string }) {
   const version = installedVersion(packs, required.id);
   return version !== undefined && compareVersions(version, required.version) >= 0;
 }
 
-// Lesson 21 v1.0.2 moves the glossary tail into 生词 and removes one navigation tab.
-// Coordinates follow the displayed layout; backup package minima stay independent.
-function migrateLesson21Navigation(profile: Profile, sourceVersion?: string, targetVersion?: string) {
-  const id = 'beginner-1-lesson-21', corrected = '1.0.2';
-  const progress = profile.lessonProgress[id];
-  const previous = progress?.sectionVersion ?? sourceVersion;
-  if (!progress || !previous) return;
-  let section = progress.section;
-  if (targetVersion && compareVersions(previous, corrected) < 0 && compareVersions(targetVersion, corrected) >= 0 && section >= 8 && section <= 13) section = section === 8 ? 7 : section - 1;
-  if (targetVersion && compareVersions(previous, corrected) >= 0 && compareVersions(targetVersion, corrected) < 0 && section >= 8 && section <= 12) section++;
-  profile.lessonProgress[id] = { ...progress, section, sectionVersion: targetVersion ?? previous };
-}
-
 export async function importContentPack(file: Blob, expected?: { id: string; version: string; file: string }): Promise<string> {
-  assert(file.size <= 100 * 1024 * 1024, '内容包超过 100 MB，请按课拆分');
+  assert(file.size <= zipSizeLimit, zipSizeMessage);
   const files = readZip(new Uint8Array(await file.arrayBuffer()));
   assert(files['manifest.json'], expected ? `内置教材包清单缺失：${expected.file}` : '缺少内容包清单');
   const m = JSON.parse(strFromU8(files['manifest.json'])) as PackManifest;
+  assert(isObject(m) && m.schemaVersion === 4, '不支持的内容包版本，请导入整书内容包');
   if (expected) assert(m.id === expected.id && m.version === expected.version, `内置教材包与目录声明不符：${expected.file}`);
-  assert(m.schemaVersion === 1 || m.schemaVersion === 2 || m.schemaVersion === 3 || m.schemaVersion === 4, '不支持的内容包版本，请更新应用');
   assert(nonempty(m.id) && /^[a-z0-9][a-z0-9._-]*$/i.test(m.id) && /^\d+\.\d+\.\d+$/.test(m.version) && nonempty(m.title), '不支持的内容包版本或格式');
   assert(safePath(m.contentFile) && Array.isArray(m.files) && Array.isArray(m.dependencies), '内容包清单无效');
   const listed = new Set<string>();
   for (const item of m.files) {
-    assert(safePath(item.path) && item.path !== 'manifest.json' && !listed.has(item.path), '清单包含重复或非法路径');
+    assert(isObject(item) && safePath(item.path) && item.path !== 'manifest.json' && !listed.has(item.path), '清单包含重复或非法路径');
     listed.add(item.path);
     assert(files[item.path]?.length === item.bytes && /^[a-f0-9]{64}$/.test(item.sha256) && await sha256(files[item.path]) === item.sha256, `文件损坏：${item.path}`);
   }
   assert(listed.has(m.contentFile) && Object.keys(files).length === listed.size + 1, '内容包存在未校验的文件');
   const data: unknown = JSON.parse(strFromU8(files[m.contentFile]));
-  const bundled = m.schemaVersion === 4;
   const validRequirement = (value: unknown) => isObject(value) && nonempty(value.id)
     && /^[a-z0-9][a-z0-9._-]*$/i.test(value.id) && typeof value.version === 'string' && /^\d+\.\d+\.\d+$/.test(value.version);
   assert(m.dependencies.every(validRequirement), '内容包依赖无效');
-  if (bundled) {
-    assert(Array.isArray(m.members) && m.members.length > 0 && Array.isArray(data) && data.length === m.members.length, '书包缺少有效的内容清单');
-    const ids = new Set<string>(), ranks = new Set<number>();
-    for (const member of m.members) {
-      assert(validRequirement(member) && member.id !== m.id && !ids.has(member.id) && Number.isSafeInteger(member.order)
-        && member.order >= 0 && !ranks.has(member.order), '书包包含无效或重复的内容条目');
-      ids.add(member.id); ranks.add(member.order);
-    }
-    for (const part of data) {
-      assert(isObject(part) && Array.isArray(part.bookSections), '书包内容缺少教材栏目数组');
-      validateContent(part, listed, emptyContent(), true);
-    }
-  } else {
-    assert(m.members === undefined && isObject(data), '教材内容格式错误');
-    if (m.schemaVersion === 2 || m.schemaVersion === 3) assert(Array.isArray(data.bookSections), `版本 ${m.schemaVersion} 内容包缺少教材栏目数组`);
-    else assert(data.bookSections === undefined || (Array.isArray(data.bookSections) && data.bookSections.length === 0), '教材栏目需要版本 2 内容包');
+  assert(Array.isArray(m.members) && m.members.length > 0 && Array.isArray(data) && data.length === m.members.length, '书包缺少有效的内容清单');
+  const memberIds = new Set<string>(), memberOrders = new Set<number>();
+  for (const member of m.members) {
+    assert(validRequirement(member) && member.id !== m.id && !memberIds.has(member.id) && Number.isSafeInteger(member.order)
+      && member.order >= 0 && !memberOrders.has(member.order), '书包包含无效或重复的内容条目');
+    memberIds.add(member.id); memberOrders.add(member.order);
   }
+  const parts = data.map((part: unknown) => {
+    validateContent(part);
+    return part;
+  });
 
   const generation = `${m.id}/${crypto.randomUUID()}`;
-  return db.transaction('rw', db.packs, db.datasets, db.assets, db.profiles, db.snapshots, async () => {
-    const packs = (await db.packs.toArray()).filter(pack => !isWaitingPack(pack.id)).sort((a, b) => a.installedAt.localeCompare(b.installedAt));
+  return db.transaction('rw', db.packs, db.datasets, db.profiles, async () => {
+    const packs = await db.packs.toArray();
     const existing = packs.find(pack => pack.id === m.id);
     if (existing) assert(compareVersions(m.version, existing.version) >= 0, '不能用旧版覆盖新版内容包');
-    const covering = packs.find(pack => pack.members?.some(member => member.id === m.id));
-    if (covering) {
-      assert(!bundled && satisfiesPack([covering], m), '请导入更新的整书内容包');
-      return `已安装 ${covering.title}`;
-    }
-    const members = new Map(m.members?.map(member => [member.id, member]));
     for (const member of existing?.members ?? []) {
       assert(satisfiesPack([m], member), `更新会移除或降级书包内容：${member.id}`);
     }
-    const retired = packs.filter(pack => pack.id === m.id || members.has(pack.id));
-    for (const pack of retired) if (pack.id !== m.id) {
-      assert(!pack.members && satisfiesPack([m], pack), `书包不能覆盖较新的内容包：${pack.title}`);
-    }
-    const retained = packs.filter(pack => !retired.includes(pack));
+    const retained = packs.filter(pack => pack.id !== m.id);
     const candidatePacks = [...retained, m];
-    for (const pack of retained) for (const member of pack.members ?? []) {
-      assert(!members.has(member.id) && !m.members?.some(item => item.order === member.order), '书包内容 ID 或顺序冲突');
+    for (const pack of retained) {
+      assert(!memberIds.has(pack.id) && pack.members.every(member =>
+        member.id !== m.id && !memberIds.has(member.id) && !memberOrders.has(member.order)), '书包内容 ID 或顺序冲突');
     }
     for (const dep of m.dependencies) assert(satisfiesPack(retained, dep), `请先导入依赖内容包：${dep.id}`);
     for (const pack of retained) for (const dep of pack.dependencies) {
       assert(satisfiesPack(candidatePacks, dep), `升级会破坏内容包依赖：${pack.title}`);
     }
     if (existing?.version === m.version) {
-      assert(existing.schemaVersion === m.schemaVersion && existing.contentFile === m.contentFile
+      assert(existing.contentFile === m.contentFile
         && canonical(existing.files) === canonical(m.files) && canonical(existing.members) === canonical(m.members)
         && canonical(existing.dependencies) === canonical(m.dependencies), '同一版本内容不同，请提升内容包版本号');
       return `已安装 ${m.title}`;
     }
 
     const retainedRows = await db.datasets.bulkGet(retained.map(pack => pack.generation));
-    if (bundled) {
-      const retiredRows = await db.datasets.bulkGet(retired.map(pack => pack.generation));
-      const oldParts = orderedDatasets(retired, retiredRows);
-      // A retired source can drop its optional image, but cannot change identity.
-      mergeContent([...oldParts, ...(data as ContentDataset[])].map(part => ({ ...emptyContent(), sources: part.sources })));
-    } else {
-      validateContent(data, listed, mergeContent(orderedDatasets(retained, retainedRows)), m.schemaVersion === 3);
+    if (existing) {
+      const oldParts = (await db.datasets.get(existing.generation))?.data ?? [];
+      mergeContent([...oldParts, ...parts].map(part => ({ ...emptyContent(), sources: part.sources })));
     }
-    const incoming = { id: generation, data: data as DatasetRow['data'] };
+    const incoming = { id: generation, data: parts };
     const candidate = mergeContent(orderedDatasets(candidatePacks, [...retainedRows, incoming]));
-    const allAssets = new Set([...listed, ...retained.flatMap(pack => pack.files.map(file => file.path))]);
-    validateContent(candidate, allAssets, emptyContent(), true);
+    validateContent(candidate);
 
-    for (const path of listed) if (path.startsWith('assets/')) {
-      await db.assets.put({ id: `${generation}/${path}`, blob: new Blob([new Uint8Array(files[path])], { type: /\.png$/i.test(path) ? 'image/png' : /\.webp$/i.test(path) ? 'image/webp' : 'image/jpeg' }) });
-    }
     await db.datasets.put(incoming);
-    for (const pack of retired) {
-      await db.assets.where('id').startsWith(`${pack.generation}/`).delete();
-      await db.datasets.delete(pack.generation);
-      await db.packs.delete(pack.id);
-    }
+    if (existing) await db.datasets.delete(existing.generation);
     await db.packs.put({ ...m, generation, installedAt: new Date().toISOString() });
     const p = hydrateProfile((await db.profiles.get('main'))?.data ?? initialProfile());
-    const lessonId = 'beginner-1-lesson-21';
-    const previous = installedVersion(packs, lessonId);
-    const next = installedVersion([m], lessonId);
-    if (next) {
-      migrateLesson21Navigation(p, previous, next);
-      const snapshot = await db.snapshots.get('before-restore');
-      if (snapshot?.data.lessonProgress[lessonId]) {
-        migrateLesson21Navigation(snapshot.data, previous, next);
-        await db.snapshots.put(snapshot);
-      }
-    }
     const ids = new Set(candidate.entries.map(entry => entry.id));
     p.cards = p.cards.map(card => ({ ...card, archived: !ids.has(card.entryId) }));
     await db.profiles.put({ id: 'main', data: p });
@@ -510,7 +404,7 @@ function validateProfile(v: unknown): asserts v is Profile {
   assert(isObject(v) && isObject(v.settings) && Number.isInteger(v.settings.dailyNewLimit) && Number(v.settings.dailyNewLimit) >= 0 && Number(v.settings.dailyNewLimit) <= 100 && [3, 5, 10].includes(Number(v.settings.defaultMinutes)) && nonempty(v.settings.targetLevel) && typeof v.settings.furigana === 'boolean', '备份设置无效');
   assert(strings(v.favorites) && isObject(v.notes) && Object.values(v.notes).every(x => typeof x === 'string') && isObject(v.lessonProgress), '备份收藏、笔记或进度无效');
   if (v.masteredEntryIds !== undefined) assert(strings(v.masteredEntryIds) && new Set(v.masteredEntryIds).size === v.masteredEntryIds.length, '备份已掌握条目无效');
-  for (const row of Object.values(v.lessonProgress)) assert(isObject(row) && Number.isInteger(row.section) && Number(row.section) >= 0 && typeof row.completed === 'boolean' && (row.sectionVersion === undefined || (typeof row.sectionVersion === 'string' && /^\d+\.\d+\.\d+$/.test(row.sectionVersion))), '备份课次进度无效');
+  for (const row of Object.values(v.lessonProgress)) assert(isObject(row) && Number.isInteger(row.section) && Number(row.section) >= 0 && typeof row.completed === 'boolean', '备份课次进度无效');
   assert(Array.isArray(v.cards) && Array.isArray(v.reviews) && Array.isArray(v.answers), '备份学习记录无效');
   const seen = new Set<string>();
   for (const row of v.cards) {
@@ -536,7 +430,7 @@ function validateProfile(v: unknown): asserts v is Profile {
 export async function exportBackup(): Promise<Blob> {
   const state = await readLibrary();
   const requirements = new Map((state.profile.requiredPacks || []).filter(required =>
-    !state.packs.some(pack => pack.members?.some(member => member.id === required.id && compareVersions(member.version, required.version) >= 0)),
+    !state.packs.some(pack => pack.members.some(member => member.id === required.id && compareVersions(member.version, required.version) >= 0)),
   ).map(p => [p.id, p]));
   for (const p of state.packs) if (!requirements.has(p.id) || compareVersions(p.version, requirements.get(p.id)!.version) >= 0) requirements.set(p.id, { id: p.id, version: p.version, title: p.title });
   const payload = strToU8(JSON.stringify({ schemaVersion: 1, kind: 'hiyori-backup', createdAt: new Date().toISOString(), profile: state.profile, requiredPacks: [...requirements.values()] }));
@@ -555,25 +449,19 @@ export async function restoreBackup(file: Blob): Promise<{ missingPacks: string[
     const packs = await db.packs.toArray();
     for (const dep of backup.requiredPacks) if (!satisfiesPack(packs, dep)) missingPacks.push(typeof dep.title === 'string' ? dep.title : dep.id);
     const old = hydrateProfile((await db.profiles.get('main'))?.data ?? initialProfile());
-    const currentLesson21Version = installedVersion(packs, 'beginner-1-lesson-21');
-    migrateLesson21Navigation(old, currentLesson21Version, currentLesson21Version);
     await db.snapshots.put({ id: 'before-restore', data: old, at: new Date().toISOString() });
     const restored = hydrateProfile({ ...backup.profile, requiredPacks: backup.requiredPacks });
-    migrateLesson21Navigation(restored, backup.requiredPacks.find((pack: { id: string; version: string }) => pack.id === 'beginner-1-lesson-21')?.version, currentLesson21Version);
     skipMasteredCards(restored);
     await db.profiles.put({ id: 'main', data: restored });
   });
   return { missingPacks };
 }
 export async function undoRestore() {
-  await db.transaction('rw', db.profiles, db.snapshots, db.packs, async () => {
+  await db.transaction('rw', db.profiles, db.snapshots, async () => {
     const snapshot = await db.snapshots.get('before-restore');
     assert(snapshot, '尚无恢复前快照');
-    const version = installedVersion(await db.packs.toArray(), 'beginner-1-lesson-21');
     const current = hydrateProfile((await db.profiles.get('main'))?.data ?? initialProfile());
     const restored = hydrateProfile(snapshot.data);
-    migrateLesson21Navigation(current, version, version);
-    migrateLesson21Navigation(restored, undefined, version);
     await db.profiles.put({ id: 'main', data: restored });
     await db.snapshots.put({ id: 'before-restore', data: current, at: new Date().toISOString() });
   });

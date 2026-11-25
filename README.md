@@ -34,9 +34,11 @@
 
 ### 学习记录、内容包与备份
 
-「我的」集中管理收藏、笔记、错题、新卡上限和目标等级。内容包经过校验后安装，学习记录可导出为 ZIP，恢复前会保存当前记录的快照。备份会记录所需内容包，换设备时可按提示补装。
+「我的」集中管理收藏、笔记、错题、新卡上限和目标等级。支持手动导入 schema v4 整书 ZIP，校验通过后安装。学习记录可导出为 ZIP，恢复前会保存当前记录的快照。备份会记录所需内容包，换设备时可按提示补装。
 
 ![网页版内容与备份页面，展示已安装教材及备份操作](./docs/screenshots/backup.png)
+
+整书 ZIP 的 `manifest.json` 记录成员 ID、版本、合并顺序和依赖，以及每个载荷文件的字节数和 SHA-256。正文数组与 `members` 一一对应，每个成员都须包含 `bookSections`。更新应用时，旧格式教材缓存会被清理，内置整书包会在启动时补装。学习记录与恢复快照会保留。
 
 网页版的词句点读使用设备上的日语离线语音。当前 Android 工程尚未接入原生点读组件，离线阅读、检索和练习仍可用。
 
@@ -128,7 +130,7 @@ $apksigner = "$env:ANDROID_HOME\build-tools\36.0.0\apksigner.bat"
 | [`app/src/store.ts`](./app/src/store.ts)、[`app/src/types.ts`](./app/src/types.ts) | 定义教材和学习记录的数据类型，通过 Dexie 访问 IndexedDB，并处理内容包导入、复习记录和备份。 |
 | [`app/src/search-index.ts`](./app/src/search-index.ts)、[`app/src/content-links.ts`](./app/src/content-links.ts)、[`app/src/reference-levels.ts`](./app/src/reference-levels.ts) | 构建检索索引、关联课文中的词条，并按教材和 JLPT 等级筛选。 |
 | [`app/src/study-plan.ts`](./app/src/study-plan.ts)、[`app/src/platform.ts`](./app/src/platform.ts) | 选择学习单元中的到期卡和新卡，封装日语点读和文件下载。 |
-| [`app/public/packs/`](./app/public/packs)、[`content/book-packs.json`](./content/book-packs.json) | 存放运行时读取的学习包目录和 8 个已发布 ZIP，以及应用引用的课次和等级成员合并顺序。 |
+| [`app/public/packs/`](./app/public/packs)、[`content/book-packs.json`](./content/book-packs.json) | 存放学习包目录、8 个已发布整书 ZIP 和整书打包配置。应用读取各 ZIP 清单中的成员顺序。 |
 | [`scripts/build.mjs`](./scripts/build.mjs)、[`scripts/serve.mjs`](./scripts/serve.mjs)、[`start-hiyori.bat`](./start-hiyori.bat) | 执行网页构建、提供 `dist/` 本地服务，以及在 Windows 上双击启动。 |
 | [`capacitor.config.ts`](./capacitor.config.ts)、[`android/`](./android)、[`scripts/build-android.ps1`](./scripts/build-android.ps1) | 定义应用标识和网页入口，保存 Android 原生工程及 Gradle Wrapper，构建和同步 APK 所需文件。 |
 | [`package.json`](./package.json)、[`package-lock.json`](./package-lock.json)、[`tsconfig.json`](./tsconfig.json)、[`vite.config.ts`](./vite.config.ts) | 定义依赖、npm 命令、TypeScript 检查和 Vite 构建配置。 |

@@ -9,7 +9,6 @@
     "start": "node scripts/serve.mjs",
     "test": "vitest run --configLoader runner",
     "test:e2e": "playwright test",
-    "content:inventory": "node scripts/content.mjs inventory",
     "android:sync": "cap sync android"
   },
   "dependencies": {

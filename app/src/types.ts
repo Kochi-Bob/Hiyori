@@ -1,7 +1,7 @@
 import type { Card } from 'ts-fsrs';
 export type ContentStatus = 'searchable' | 'learnable' | 'verified';
 export interface Book { id: string; title: string; filename: string; pageCount: number; description?: string }
-export interface Source { id: string; bookId: string; pdfPage: number; printedPage?: string; asset?: string; section?: string }
+export interface Source { id: string; bookId: string; pdfPage: number; printedPage?: string; section?: string }
 export interface TextbookContent {
   id: string; bookId: string; lessonId?: string; reading?: string; meaning: string; explanation?: string;
   examples: { japanese: string; chinese: string }[]; status: ContentStatus; sourceIds: string[];
@@ -18,7 +18,7 @@ export interface BookSection extends LessonSection { bookId: string; status: Con
 export interface Lesson { id: string; bookId: string; number: number; title: string; status: ContentStatus; entryIds: string[]; quizIds: string[]; sections: LessonSection[]; coverageNote?: string }
 export interface Quiz { id: string; lessonId: string; type: 'choice' | 'cloze'; prompt: string; options?: string[]; answers: string[]; explanation: string; status: ContentStatus; sourceIds: string[]; entryIds: string[]; supplemental?: boolean }
 export interface ContentDataset { books: Book[]; entries: Entry[]; sources: Source[]; lessons: Lesson[]; quizzes: Quiz[]; bookSections?: BookSection[] }
-export interface PackManifest { schemaVersion: 1 | 2 | 3 | 4; id: string; version: string; title: string; createdAt?: string; contentFile: string; dependencies: { id: string; version: string }[]; files: { path: string; sha256: string; bytes: number }[]; members?: { id: string; version: string; order: number }[] }
+export interface PackManifest { schemaVersion: 4; id: string; version: string; title: string; createdAt?: string; contentFile: string; dependencies: { id: string; version: string }[]; files: { path: string; sha256: string; bytes: number }[]; members: { id: string; version: string; order: number }[] }
 export interface InstalledPack extends PackManifest { installedAt: string; generation: string }
 export interface ReviewCard { entryId: string; card: Card; archived?: boolean }
 export interface ReviewEvent { id: string; entryId: string; at: string; rating: number; wasNew: boolean }
@@ -29,7 +29,7 @@ export interface StudySession {
 }
 export interface Profile {
   settings: { dailyNewLimit: number; defaultMinutes: number; targetLevel: string; startLessonId?: string; furigana: boolean };
-  favorites: string[]; notes: Record<string, string>; lessonProgress: Record<string, { section: number; completed: boolean; sectionVersion?: string }>;
+  favorites: string[]; notes: Record<string, string>; lessonProgress: Record<string, { section: number; completed: boolean }>;
   cards: ReviewCard[]; reviews: ReviewEvent[]; answers: AnswerEvent[]; session: StudySession | null;
   masteredEntryIds?: string[];
   quizSession?: { quizIds: string[]; index: number; answer: string; result: boolean | null } | null;
