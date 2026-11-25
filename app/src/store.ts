@@ -145,15 +145,26 @@ export function mergeContent(parts: ContentDataset[]): ContentDataset {
   merged.bookSections!.sort((a, b) => page(a) - page(b) || a.order - b.order || a.id.localeCompare(b.id));
   return merged;
 }
-async function readLibrary() {
+// Each installed pack row points at an immutable dataset row (a fresh generation ID per
+// import), so the ordered generation list identifies the merged content exactly.
+// Profile-only writes then reuse the same content object instead of re-merging every book,
+// which also keeps React memoization keyed on `content` stable.
+let contentCache: { db: string; key: string; content: ContentDataset } | undefined;
+export async function readLibrary() {
   return db.transaction('r', db.packs, db.datasets, db.profiles, async () => {
     const packs = (await db.packs.toArray()).filter(pack => !isWaitingPack(pack.id)).sort((a, b) => a.installedAt.localeCompare(b.installedAt));
-    const datasets = await db.datasets.bulkGet(packs.map(p => p.generation));
-    const content = mergeContent(orderedDatasets(packs, datasets));
+    const key = packs.map(p => p.generation).join('\n');
+    let content: ContentDataset;
+    if (contentCache?.db === db.name && contentCache.key === key) content = contentCache.content;
+    else {
+      const datasets = await db.datasets.bulkGet(packs.map(p => p.generation));
+      content = mergeContent(orderedDatasets(packs, datasets));
+      contentCache = { db: db.name, key, content };
+    }
     return { content, packs, profile: hydrateProfile((await db.profiles.get('main'))?.data ?? initialProfile()), ready: true };
   });
 }
-function orderedDatasets(packs: PackManifest[], rows: (DatasetRow | undefined)[]) {
+export function orderedDatasets(packs: PackManifest[], rows: (DatasetRow | undefined)[]) {
   // On consolidation, keep the original catalog precedence across books.
   const grouped = packs.some(pack => pack.members);
   const parts = packs.flatMap((pack, index) => {
