@@ -67,6 +67,16 @@ npm.cmd start
 npm.cmd run dev
 ```
 
+### 测试
+
+```powershell
+npm.cmd test
+npx.cmd playwright install chromium
+npm.cmd run test:e2e
+```
+
+Vitest 使用隔离的 IndexedDB 测试学习记录、内容包和备份。Playwright 会重新构建 `dist/`，启动本地服务，并在独立浏览器中验收，请先释放端口 4173。已有 Microsoft Edge 的电脑也可以设置 `$env:HIYORI_TEST_BROWSER = 'msedge'` 后直接运行端到端测试。
+
 ## 安卓版
 
 ### 安装与运行
